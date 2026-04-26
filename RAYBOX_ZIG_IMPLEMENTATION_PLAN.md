@@ -44,6 +44,8 @@ The browser preview must not use HTML/DOM rendering. The native preview must not
 
 The Boon examples stay Boon programs. Do not manually rewrite examples as Zig widgets.
 
+No green test may be produced by skipping examples, hiding examples, replacing Boon examples with Zig widgets, ignoring LINK events, returning empty snapshots, mutating the corpus manifest into a pass report, or marking unimplemented features as `DONE`. A skipped or unsupported feature must fail verification with an explicit diagnostic.
+
 ---
 
 ## 1. Fixed v0 technology stack
@@ -79,6 +81,46 @@ Rendering:
   CPU-generated 2D geometry + Sokol batches
 ```
 
+### 1.1 Version pins and preconditions
+
+The first implementation must be built and verified against explicit pins. Update these pins deliberately, never implicitly during feature work.
+
+```text
+Zig:
+  0.17.0-dev.9+046002d1a
+
+Boon corpus:
+  BoonLang/boon@c924d9f7d7e1c156604c9377e0487db48c278353
+
+boon-zig reviewed baseline:
+  BoonLang/boon-zig@d1b72cb2e0502e6e53de479f68ef138793c64bd1
+  local path override is allowed only while developing the required bridge
+  before final verification, replace the override with a pinned commit
+
+Clay:
+  git commit 0ced4c621fc744e5c575d27c533cee63f7d700ce
+  copy this exact clay.h into src/clay/
+
+sokol-zig:
+  git commit 8814c1849f4b41da824c4c1e79e36a1f58a96b1e
+  build.zig.zon dependency URL: https://github.com/floooh/sokol-zig/archive/8814c1849f4b41da824c4c1e79e36a1f58a96b1e.tar.gz
+  build.zig.zon dependency hash: sokol-0.1.0-pb1HK_NVNwCp_--5H9JbMkUMH9rryfVqGr1RDsJuDnXC
+
+FontStash/stb_truetype:
+  FontStash git commit b5ddc9741061343740d85d636d782ed3e07cf7be
+  stb git commit 31c1ad37456438565541f4919958214b6e762fb4
+  vendor exact headers locally
+  local vendored patches are allowed, but must be documented in src/text/README.md
+
+Fonts:
+  Inter-Regular.ttf from rsms/inter@e3a3d4c57d5ecc01453a575621882a384c1995a3 (v4.1)
+  JetBrainsMono-Regular.ttf from JetBrains/JetBrainsMono@cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9 (v2.304)
+  NotoSans-Regular.ttf from notofonts/latin-greek-cyrillic@cb097900c74b26e6dcab899b4f07b2bc79dd80c4
+  vendor these exact TTF files under assets/fonts/ and record their license text in THIRD_PARTY_LICENSES.md
+```
+
+The reviewed `boon-zig` baseline does not expose the structured Raybox runtime bridge required below. If `boon-zig` still lacks that API when implementation starts, Phase 0 is to add the bridge in `boon-zig`, pin `raybox-zig` to the commit that contains it, and only then continue with the Raybox adapter. Do not infer runtime state from private `boon-zig` internals.
+
 Do not add these before the definition of done passes:
 
 ```text
@@ -103,23 +145,41 @@ This is not because those are bad; it is because this implementation must first 
 
 ## 2. Source-of-truth corpus
 
-The source of truth is the upstream Rust Boon playground repository:
+The source of truth is the upstream Rust Boon playground repository at the pinned corpus commit:
 
 ```text
-https://github.com/BoonLang/boon
+BoonLang/boon@c924d9f7d7e1c156604c9377e0487db48c278353
 ```
 
-Import examples from:
+The importer reads source files from:
 
 ```text
 playground/frontend/src/examples/
 ```
 
-Generate a manifest. The manifest is authoritative. No example may be silently skipped.
+but it selects examples from the Rust playground registry in:
+
+```text
+playground/frontend/src/main.rs
+```
+
+Import only examples registered in:
+
+```text
+EXAMPLE_DATAS
+OTHER_EXAMPLE_DATAS
+DEBUG_EXAMPLE_DATAS
+MULTI_FILE_EXAMPLES
+TODO_MVC_PHYSICAL_FILES
+```
+
+Do not import non-registry directories for v0, including `hw_examples/`. If upstream contains `.bn` files that are not registered in the playground, write them to the manifest as ignored entries with a concrete reason, not as hidden omissions.
+
+Generate a manifest. The manifest is authoritative. No registered example may be silently skipped.
 
 ### 2.1 Current known single-file example groups
 
-The current Rust playground embeds main, other, and debug examples. The generated importer must discover the actual files, but this list is a sanity check.
+The current Rust playground embeds main, other, and debug examples. The generated importer must parse the registry and verify this list at the pinned commit.
 
 ```text
 minimal
@@ -191,6 +251,16 @@ README.md
 
 The imported project must preserve relative paths exactly.
 
+For every selected example, copy all files that belong to that example: `.bn`, `.expected`, reference images, metadata JSON, helper scripts, docs, and asset directories. For ignored upstream entries such as `hw_examples/` and the root-level `checkbox_test.bn`, record:
+
+```json
+{
+  "path": "hw_examples/",
+  "status": "IGNORED",
+  "reason": "not registered in Rust playground example registry for v0"
+}
+```
+
 ### 2.3 Manifest format
 
 Generate:
@@ -200,12 +270,14 @@ fixtures/corpus_manifest.json
 src/playground/generated_example_registry.zig
 ```
 
-Each entry must include:
+`fixtures/corpus_manifest.json` is static imported source-of-truth metadata. It must not be mutated by verification commands. Each imported example entry must include:
 
 ```json
 {
   "name": "todo_mvc_physical",
   "kind": "multi_file",
+  "source_commit": "c924d9f7d7e1c156604c9377e0487db48c278353",
+  "registry_section": "MULTI_FILE_EXAMPLES",
   "entry_file": "RUN.bn",
   "files": [
     "RUN.bn",
@@ -218,16 +290,36 @@ Each entry must include:
     "Theme/Neumorphism.bn"
   ],
   "expected": "todo_mvc_physical.expected",
-  "parser": "NOT_STARTED",
-  "runtime": "NOT_STARTED",
-  "renderer": "NOT_STARTED",
-  "native_window": "NOT_STARTED",
-  "browser_canvas": "NOT_STARTED",
+  "assets": [
+    "assets/icons/checkbox_active.svg",
+    "assets/icons/checkbox_completed.svg"
+  ],
+  "ignored": false,
   "notes": ""
 }
 ```
 
-Allowed statuses:
+Ignored upstream entries are source metadata too:
+
+```json
+{
+  "path": "hw_examples/",
+  "source_commit": "c924d9f7d7e1c156604c9377e0487db48c278353",
+  "ignored": true,
+  "notes": "not registered in Rust playground example registry for v0"
+}
+```
+
+Generated verification results go only to:
+
+```text
+zig-out/reports/example_status_native.json
+zig-out/reports/example_status_web.json
+zig-out/reports/physical_visual_native.json
+zig-out/reports/physical_visual_web.json
+```
+
+Report entries use these statuses:
 
 ```text
 NOT_STARTED
@@ -236,7 +328,7 @@ BLOCKED
 DONE
 ```
 
-A release requires every imported example to be `DONE` for parser, runtime, renderer, native window, and browser canvas.
+A release requires every non-ignored imported example to be `DONE` in the generated native and web reports for parser, runtime, renderer, native window, and browser canvas.
 
 ---
 
@@ -339,6 +431,7 @@ raybox-zig/
       import_upstream.zig
       generate_example_registry.zig
       verify_corpus.zig
+      verify_text.zig
       verify_examples.zig
       verify_physical_visual.zig
 ```
@@ -369,6 +462,9 @@ zig build import-upstream
 zig build generate-example-registry
 zig build verify-corpus
 
+zig build verify-text-native
+zig build verify-text-web
+
 zig build verify-examples-native
 zig build verify-examples-web
 
@@ -381,6 +477,27 @@ zig build test
 `run-playground -Dtarget=wasm32-emscripten` must build a web app and serve or open it using the sokol-zig Emscripten link step.
 
 For web builds, use Sokol's Emscripten/WebGL2 path. Do not attempt `wasm32-freestanding`.
+
+Example, text, and physical verifier commands accept:
+
+```bash
+-Dexample=<example-name>
+```
+
+`verify-examples-*` and `verify-physical-*` also accept:
+
+```bash
+-Dbuild-only=true
+```
+
+`-Dbuild-only=true` runs import, `BUILD.bn` execution if present, module resolution, compile, and snapshot creation, but does not execute interactive expected actions.
+
+Examples:
+
+```bash
+zig build verify-examples-native -Dexample=todo_mvc_physical -Dbuild-only=true
+zig build verify-examples-web -Dexample=todo_mvc_physical -Dbuild-only=true
+```
 
 ---
 
@@ -494,6 +611,8 @@ Professional/get(...)
 Assets/icon()
 ```
 
+If any imported module lexes, parses, or resolves incorrectly, compilation fails. Do not silently omit a module. If two module files produce the same basename module name, fail with a collision diagnostic that names both relative file paths.
+
 ### 6.2 Build file execution
 
 If a project contains `BUILD.bn`, `Run` must execute it before compiling the entry file.
@@ -509,6 +628,7 @@ Text/join_lines()
 List/retain()
 List/sort_by()
 List/map()
+List/count()
 Log/info()
 Log/error()
 Build/succeed()
@@ -519,12 +639,58 @@ FLUSHED
 
 The build script must run against an in-memory project VFS with access to imported `assets/icons/`.
 
+Build host semantics for v0:
+
+```text
+Directory/entries(path):
+  - accepts relative paths such as ./assets/icons
+  - resolves inside the project VFS only
+  - returns LIST of records sorted by raw relative path before any List/sort_by()
+  - each record has:
+      path: "./assets/icons/<filename>"
+      file_name: "<filename>"
+      file_stem: "<filename without final extension>"
+      extension: "<extension without dot>"
+      is_file: True
+      is_directory: False
+
+File/read_text(path):
+  - resolves relative to project root
+  - returns Ok[text: <utf8 text>] or ReadError[message: <text>]
+
+File/write_text(path, text):
+  - writes into the in-memory VFS
+  - creates parent directories in the VFS if needed
+  - returns Ok or WriteError[message: <text>]
+
+Url/encode(text):
+  - UTF-8 percent-encodes every byte except ASCII alphanumeric and - _ . ~ / :
+  - spaces become %20, not +
+  - # becomes %23
+  - returns Ok[encoded: <text>] or EncodeError[message: <text>]
+
+Text/join_lines(list):
+  - joins text items with "\n" and no extra trailing newline
+
+List/sort_by(item, key):
+  - stable ascending bytewise UTF-8 ordering
+
+Build/succeed() / Build/fail():
+  - stop BUILD.bn execution with success/failure status
+  - logs remain available to the playground diagnostic panel
+
+FLUSH / FLUSHED:
+  - implement the upstream build-script behavior needed by BUILD.bn
+  - FLUSH exits the current expression with an error-like value
+  - FLUSHED propagates transparently through expression boundaries
+```
+
 Verification for `todo_mvc_physical`:
 
 ```text
 1. Run BUILD.bn.
 2. Confirm Generated/Assets.bn is written.
-3. Confirm generated output is semantically equivalent to the checked-in Generated/Assets.bn.
+3. Normalize CRLF to LF for both files and confirm generated output exactly matches the checked-in Generated/Assets.bn text.
 4. Use the generated file for RUN.bn compilation.
 ```
 
@@ -539,20 +705,88 @@ Assets/icon().checkbox_completed
 
 ## 7. Runtime bridge contract
 
-Raybox receives snapshots, not AST nodes.
+Raybox receives snapshots, not AST nodes or private runtime values. `boon-zig` must expose this public bridge before Raybox implements the adapter.
 
 ```zig
+pub const BoonRuntimeHost = struct {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        persist: *PersistStore,
+        route: *RouteStore,
+        time: *TimeSource,
+    ) !BoonRuntimeHost;
+
+    pub fn deinit(self: *BoonRuntimeHost) void;
+    pub fn loadProject(self: *BoonRuntimeHost, project: Project) !void;
+    pub fn runBuildFile(self: *BoonRuntimeHost) !BuildResult;
+    pub fn compileEntry(self: *BoonRuntimeHost) !CompileResult;
+    pub fn start(self: *BoonRuntimeHost) !RuntimeOutput;
+    pub fn dispatch(self: *BoonRuntimeHost, event: PreviewEvent) !RuntimeOutput;
+    pub fn tick(self: *BoonRuntimeHost, now_ms: u64) !RuntimeOutput;
+    pub fn clearState(self: *BoonRuntimeHost, project_name: []const u8) !void;
+};
+```
+
+If `boon-zig` does not expose this API yet, implement it in `boon-zig` first and then pin `raybox-zig` to that commit. Raybox-zig must not introspect `boon-zig` private internals and must not reimplement parser/runtime semantics.
+
+All slices returned from bridge calls are owned by the `BoonRuntimeHost` until the next mutating host call unless a type explicitly says it is caller-owned. Returned snapshots must be immutable, self-contained views for the current revision.
+
+```zig
+pub const BuildResult = union(enum) {
+    not_present,
+    ok: BuildSummary,
+    diagnostics: []Diagnostic,
+};
+
+pub const CompileResult = union(enum) {
+    ok: CompiledProject,
+    diagnostics: []Diagnostic,
+};
+
 pub const RuntimeOutput = union(enum) {
     document: DocumentSnapshot,
     scene: SceneSnapshot,
     diagnostics: []Diagnostic,
 };
 
+pub const TimeSource = union(enum) {
+    real,
+    virtual: *VirtualClock,
+};
+
+pub const VirtualClock = struct {
+    now_ms: u64,
+    pub fn advance(self: *VirtualClock, delta_ms: u64) void;
+};
+```
+
+Time rules:
+
+```text
+Interactive playground:
+  uses TimeSource.real
+
+Expected runner:
+  uses TimeSource.virtual
+
+wait action:
+  advances virtual time
+  calls BoonRuntimeHost.tick(now_ms)
+  pumps frames until runtime, semantic tree, and render trace are quiescent
+```
+
+This is required for `interval`, `interval_hold`, `timer`, and every `.expected` file that uses `wait`.
+
+`PreviewEvent` is the input event union defined in section 16. `BoonRuntimeHost.dispatch` is the only path from Raybox UI input back into Boon `LINK` ports.
+
+Snapshot data:
+
+```zig
 pub const DocumentSnapshot = struct {
     revision: u64,
     root: ValueId,
-    values: []const Value,
-    links: []const LinkBinding,
+    values: []const RuntimeValue,
+    events: []const EventBinding,
     timers: []const TimerBinding,
     route: []const u8,
 };
@@ -560,22 +794,59 @@ pub const DocumentSnapshot = struct {
 pub const SceneSnapshot = struct {
     revision: u64,
     root: ValueId,
-    values: []const Value,
+    values: []const RuntimeValue,
     lights: []const LightValue,
-    geometry: GeometryValue,
-    links: []const LinkBinding,
+    geometry: RuntimeValue,
+    events: []const EventBinding,
     timers: []const TimerBinding,
     route: []const u8,
 };
 
-pub const Value = union(enum) {
+pub const RuntimeValue = union(enum) {
     none,
     number: f64,
     bool: bool,
     text: []const u8,
+    symbol: []const u8,
     list: []const ValueId,
-    record: RecordValue,
+    record: []const RecordField,
     element: ElementNode,
+};
+
+pub const ElementNode = struct {
+    kind: []const u8,
+    args: []const RecordField,
+    stable_id: []const u8,
+};
+
+pub const EventBinding = struct {
+    id: LinkId,
+    source_value: ValueId,
+    event_name: []const u8,
+};
+
+pub const Diagnostic = struct {
+    severity: enum { info, warning, err },
+    file_path: ?[]const u8,
+    span: ?SourceSpan,
+    message: []const u8,
+};
+```
+
+Host stores are provided by Raybox, but runtime semantics stay inside `boon-zig`.
+
+```zig
+pub const PersistStore = struct {
+    ptr: *anyopaque,
+    read: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, key: []const u8) anyerror!?[]u8,
+    write: *const fn (ptr: *anyopaque, key: []const u8, value: []const u8) anyerror!void,
+    deletePrefix: *const fn (ptr: *anyopaque, prefix: []const u8) anyerror!void,
+};
+
+pub const RouteStore = struct {
+    ptr: *anyopaque,
+    current: *const fn (ptr: *anyopaque) []const u8,
+    goTo: *const fn (ptr: *anyopaque, route: []const u8) anyerror!void,
 };
 ```
 
@@ -592,6 +863,8 @@ timers
 router state
 persistence
 event ordering
+stable runtime IDs
+expected behavior of generated values
 ```
 
 Raybox owns:
@@ -605,6 +878,8 @@ mouse/keyboard capture
 semantic UI tree
 rendering
 mapping UI events back to Boon LINK ports
+native/browser host backing stores
+test-only semantic/render traces
 ```
 
 Unsupported runtime features must produce explicit diagnostics. The final definition of done requires all imported examples to pass.
@@ -747,8 +1022,11 @@ Element/stack                  -> absolute/layered container
 Element/text                   -> text node
 Scene/Element/text             -> text node with relief/depth support
 Element/paragraph              -> wrapped text block
+Scene/Element/paragraph        -> wrapped physical text block
 Element/link                   -> text/link button
+Scene/Element/link             -> physical text/link button
 Element/label                  -> label wrapper and hit target
+Scene/Element/label            -> physical label wrapper and hit target
 Element/button                 -> button
 Scene/Element/button           -> raised physical button
 Element/text_input             -> text input
@@ -853,11 +1131,33 @@ persist state
 clear state
 ```
 
+The physical adapter must explicitly support source patterns used by `RUN.bn`:
+
+```text
+element.hovered: LINK
+event.press
+event.click
+event.double_click
+event.blur
+event.change.text
+event.key_down.key
+focus: True
+Reference[element: ...]
+Hidden[text: ...]
+Scene/Element/link
+Scene/Element/paragraph
+tag fields such as Header, Footer, Section, and H1
+rotate
+background: [url: ...]
+```
+
 Its `.expected` file must pass natively and in browser.
 
 ### 12.2 Required physical UI projection
 
 Use a 2.5D physical projection in WebGL2. It must be visually attractive and deterministic.
+
+For v0, Raybox implements a deterministic 2.5D projection of Boon's physical UI semantics. It does not implement full 3D geometry, true PBR, SDF text, or general `Model/cut`. It must still visually communicate the same intent: raised buttons, recessed inputs, recessed checkboxes, shadows, bevels, glass, glow, and theme distinction.
 
 Implement these style effects:
 
@@ -1098,7 +1398,80 @@ at least one glow command exists for focused input
 checkbox_completed icon renders after completion
 ```
 
-If screenshots differ between native and browser, record image diffs and fail unless the difference is below the documented tolerance.
+Hard gate:
+
+```text
+todo_mvc_physical.expected passes
+semantic tree assertions pass
+render command trace assertions pass
+```
+
+Screenshots and image diffs are regression artifacts. They are recorded and compared against tolerance, but a pixel mismatch alone is not a hard failure unless the semantic/render trace assertions also fail. This avoids backend-specific rasterization differences between native Sokol backends and WebGL2.
+
+Write visual artifacts to:
+
+```text
+zig-out/verification/physical/<target>/<example>/<scenario>/
+```
+
+Each scenario directory contains:
+
+```text
+semantic_tree.json
+render_trace.json
+screenshot.png
+native_vs_web.diff.png
+report.json
+```
+
+`fixtures/physical_visual_spec.json` defines native/browser image tolerance:
+
+```json
+{
+  "max_mean_abs_channel_delta": 2.5,
+  "max_percent_pixels_over_delta_16": 0.5,
+  "ignored_margin_px": 1,
+  "ignore_fully_transparent_pixels": true,
+  "compare_region": "preview_viewport_only"
+}
+```
+
+Native verification uses a fixed-size Sokol test harness. The native verifier must:
+
+```text
+1. create the app with a deterministic viewport and device scale
+2. run the selected example with TimeSource.virtual
+3. dispatch expected actions through the same input path as the app
+4. read semantic_tree.json and render_trace.json directly
+5. optionally capture preview viewport screenshots
+```
+
+Browser verification uses Playwright Chromium with the Emscripten/WebGL2 build. The web verifier must:
+
+```text
+1. launch the Emscripten/WebGL2 build
+2. reset localStorage/sessionStorage/IndexedDB test data unless a persistence sequence is running
+3. wait for fonts, assets, runtime, and one rendered frame to become quiescent
+4. drive expected actions through a test bridge exposed by the Wasm app
+5. read semantic_tree.json and render_trace.json from the test bridge
+6. capture screenshots from the canvas preview viewport only
+```
+
+The browser test bridge is:
+
+```js
+window.__rayboxTest = {
+  runExample(name),
+  clearState(name),
+  dispatch(action),
+  semanticTree(),
+  renderTrace(),
+  frameStats(),
+  screenshotPng()
+};
+```
+
+The test bridge may expose diagnostics, semantic tree, render trace, route, readiness, and screenshot commands. It must not render the preview with DOM nodes.
 
 ---
 
@@ -1129,12 +1502,34 @@ pub const CustomKind = enum(u32) {
     cutout_rounded_rect,
     bevel,
     glow,
+    outline,
     caret,
     selection,
     svg_circle,
     svg_path,
 };
 ```
+
+Every custom command must also be recorded in a test-only render trace:
+
+```zig
+pub const RenderTraceCommand = struct {
+    node_id: StableId,
+    kind: CustomKind,
+    rect: Rect,
+    radius: CornerRadius,
+    color: ColorPremul,
+    z: f32 = 0,
+    blur_radius: f32 = 0,
+    spread: f32 = 0,
+    offset: Vec2 = .{ .x = 0, .y = 0 },
+    alpha: f32 = 1,
+    outline_width: f32 = 0,
+    icon_name: ?[]const u8 = null,
+};
+```
+
+The verifier reads this trace for physical assertions. Do not infer physical state from pixels when a command-level assertion is available.
 
 ### 13.2 Renderer resources
 
@@ -1152,11 +1547,21 @@ pub const Renderer = struct {
     index_buffer: sg.Buffer,
 
     white_texture: sg.Image,
-    glyph_atlas_texture: sg.Image,
 
     batcher: Batcher,
     shadows: ShadowCache,
+    images: ImageCache,
 };
+```
+
+Ownership:
+
+```text
+Renderer owns pipelines, buffers, batcher, shadow cache, and image cache.
+FontManager owns the glyph atlas sg.Image and texture updates.
+Renderer asks FontManager for the current glyph atlas image when drawing text.
+ShadowCache owns shadow render targets/textures.
+ImageCache owns decoded SVG/image textures.
 ```
 
 Vertex format:
@@ -1177,6 +1582,23 @@ texture changes
 scissor changes
 vertex capacity exceeded
 index capacity exceeded
+```
+
+Renderer hot-path rules:
+
+```text
+No heap allocations in renderer hot path after init except frame arena allocation.
+All Clay custom command data lives in a per-frame arena.
+No pointers to stack data may be passed through Clay customData.
+Frame stats record draw batches, vertices, indices, glyph uploads, shadow cache hits/misses, and frame arena high-water mark.
+```
+
+After warmup, `todo_mvc_physical` idle frames must report:
+
+```text
+zero glyph uploads
+zero shadow regenerations
+zero heap allocations in render path outside the frame arena
 ```
 
 ### 13.3 Premultiplied alpha
@@ -1279,6 +1701,27 @@ Shadow generation:
 
 Movement does not invalidate the cache. Shape, radius, blur radius, spread, and device scale invalidate the cache.
 
+Shadow clipping policy:
+
+```text
+Shadows obey active scroll/scissor clips.
+Top-level card/panel shadows may extend outside element bounds when the parent is not clipped.
+Shadow command bounds are rect expanded by spread + blur radius + abs(offset).
+```
+
+Layering policy:
+
+```text
+1. drop shadow
+2. body
+3. bevel/highlight
+4. children
+5. focus/glow
+6. overlay
+```
+
+`Element/stack` maps to Clay floating/local absolute placement. Children render in declaration order unless an explicit z/order value exists. Transforms apply after layout.
+
 ### 13.6 Shaders
 
 Use a single shader file first:
@@ -1299,11 +1742,32 @@ Programs:
 
 Do not handwrite WGSL. Do not use Slang. Generate the Zig shader module with sokol-shdc.
 
+sokol-shdc targets:
+
+```text
+glsl330
+gles300
+hlsl5
+metal_macos
+```
+
+Web builds require `gles300`. Native builds must support Metal, D3D11/HLSL, and desktop GL through the generated multi-backend shader module.
+
 ---
 
 ## 14. Text system
 
 Use FontStash + stb_truetype.
+
+Core fonts are embedded with `@embedFile` so Clay can measure text on the first frame without an async loading race:
+
+```text
+assets/fonts/Inter-Regular.ttf
+assets/fonts/JetBrainsMono-Regular.ttf
+assets/fonts/NotoSans-Regular.ttf
+```
+
+Use `sokol_fetch` for example assets/images and non-core dynamic assets, not for core UI/editor/preview font availability.
 
 ```zig
 pub const FontManager = struct {
@@ -1322,6 +1786,14 @@ pub const FontManager = struct {
 ```
 
 Do not pregenerate Unicode ranges. Cache only glyphs actually drawn.
+
+Use an RGBA8 glyph atlas initially, not R8, to avoid cross-backend texture-format surprises. Missing glyph fallback order:
+
+```text
+requested font
+NotoSans-Regular
+replacement glyph
+```
 
 Required test string in native and web:
 
@@ -1374,6 +1846,39 @@ Implement `render/svg_minimal.zig` for the subset needed by `todo_mvc_physical` 
 <path fill d="M ... L ... l ... z">
 ```
 
+The parser must tolerate the exact generated icon shape:
+
+```text
+xmlns attributes
+self-closing tags
+negative and multi-number viewBox values
+percent-decoded # color values
+fill="none"
+compact path commands without spaces, such as M72 25L42 71 27 56l-4 4 20 20 34-52z
+repeated coordinate pairs after M/L/l
+stroke and fill colors in hex form
+stroke-linecap
+stroke-linejoin
+none
+currentColor
+```
+
+Required path commands:
+
+```text
+M
+L
+l
+H
+V
+h
+v
+C if present in imported icons
+Z/z
+```
+
+`verify-corpus` must decode every generated data URI and parse every imported `todo_mvc_physical` icon SVG through `svg_minimal.zig`. If unsupported SVG syntax appears, `verify-corpus` fails with the exact file and unsupported token.
+
 For `checkbox_active`, render a stroked circle.
 
 For `checkbox_completed`, render the stroked circle and filled check path.
@@ -1389,17 +1894,27 @@ Every interactive node must be recorded in a semantic tree.
 ```zig
 pub const RenderedNode = struct {
     id: StableId,
+    source_id: []const u8,
     role: Role,
     text: []const u8,
+    placeholder: []const u8,
+    value: []const u8,
     bounds: Rect,
     visible: bool,
     focused: bool,
     hovered: bool,
     checked: ?bool,
     disabled: bool,
+    enabled: bool,
     selected: bool,
     outline_visible: bool,
     input_typeable: bool,
+    input_index: ?usize,
+    button_index: ?usize,
+    checkbox_index: ?usize,
+    select_index: ?usize,
+    slider_index: ?usize,
+    url: []const u8,
 };
 ```
 
@@ -1416,6 +1931,7 @@ pub const PreviewEvent = union(enum) {
     change_text: struct { link: LinkId, text: []const u8 },
     key_down: struct { link: LinkId, key: Key, text: []const u8 },
     blur: LinkId,
+    focus: LinkId,
     checkbox_change: struct { link: LinkId, checked: bool },
     select_change: struct { link: LinkId, value: []const u8 },
     slider_change: struct { link: LinkId, value: f64 },
@@ -1429,14 +1945,15 @@ The playground shell and preview share the same input system. Focus must be expl
 
 ## 17. Persistence and router
 
+Persistence and routing semantics belong to `boon-zig`. Raybox provides deterministic native/browser backing stores through the bridge callbacks in section 7.
+
 ### 17.1 Persistence
 
-```zig
-pub const PersistStore = struct {
-    pub fn read(self: *PersistStore, key: []const u8) ?[]const u8;
-    pub fn write(self: *PersistStore, key: []const u8, value: []const u8) void;
-    pub fn deletePrefix(self: *PersistStore, prefix: []const u8) void;
-};
+```text
+// Concrete implementation of the callback-shaped PersistStore from section 7.
+read(key) -> ?[]u8
+write(key, value) -> void
+deletePrefix(prefix) -> void
 ```
 
 Native backing:
@@ -1451,22 +1968,53 @@ Browser backing:
 localStorage keys prefixed with raybox-zig:<project-name>:
 ```
 
+For v0, browser persistence uses `localStorage` because the playground examples need synchronous host callbacks. The key namespace is:
+
+```text
+raybox-zig:<project-name>:<boon-runtime-key>
+```
+
+Do not let Raybox interpret Boon state payloads. Store and return opaque bytes/text exactly as `boon-zig` supplies them.
+
+Browser storage uses Emscripten `EM_JS` helpers or equivalent externs:
+
+```zig
+extern fn rb_local_storage_get(key_ptr: [*]const u8, key_len: usize, out: *JsStringHandle) bool;
+extern fn rb_local_storage_set(key_ptr: [*]const u8, key_len: usize, val_ptr: [*]const u8, val_len: usize) void;
+extern fn rb_local_storage_delete_prefix(prefix_ptr: [*]const u8, prefix_len: usize) void;
+```
+
 Clear State must delete the current example/project state and rerun the preview.
 
 ### 17.2 Router
 
 Implement route host API:
 
-```zig
-pub const RouteStore = struct {
-    pub fn current(self: *RouteStore) []const u8;
-    pub fn goTo(self: *RouteStore, route: []const u8) void;
-};
+```text
+// Concrete implementation of the callback-shaped RouteStore from section 7.
+current() -> []const u8
+goTo(route) -> void
 ```
 
 Native uses in-memory route state.
 
 Browser updates the URL query/hash without reloading.
+
+Browser route and external URL calls use Emscripten `EM_JS` helpers or equivalent externs:
+
+```zig
+extern fn rb_route_current(out: *JsStringHandle) bool;
+extern fn rb_route_go_to(route_ptr: [*]const u8, route_len: usize) void;
+extern fn rb_open_url(url_ptr: [*]const u8, url_len: usize) void;
+```
+
+The route host must be synchronous from the runtime perspective:
+
+```text
+RouteStore.current() returns the route visible to the current runtime tick.
+RouteStore.goTo(route) updates host route state, updates browser URL on web, and schedules a rerender without page reload.
+Route persistence, if any, is a boon-zig runtime decision; Raybox only stores requested keys.
+```
 
 `pages.bn` must pass.
 
@@ -1476,32 +2024,99 @@ Browser updates the URL query/hash without reloading.
 
 Parse upstream `.expected` files. Do not invent a new format.
 
+Parse these TOML sections/fields:
+
+```text
+[test]
+category
+description
+skip_engines
+
+[output]
+text
+match
+
+[timing]
+timeout
+initial_delay
+poll_interval
+
+[[sequence]]
+description
+actions
+expect
+expect_match
+
+[[persistence]]
+description
+actions
+expect
+expect_match
+```
+
+`skip_engines` is informational unless it explicitly names `Raybox`. The pinned v0 corpus must pass in Raybox even when an expected file skips older upstream engines such as `Actors`, `DD`, or `Wasm`.
+
+`verify-corpus` must parse all imported `.expected` files and emit:
+
+```text
+fixtures/expected_action_schema.json
+```
+
+If an unknown action exists, `verify-corpus` fails and prints the example name, action name, and line/span. Do not hand-maintain the action list without this discovery check.
+
 Support these actions:
 
 ```text
-assert_contains
-assert_not_contains
-assert_focused
-assert_input_typeable
-assert_input_empty
-assert_input_placeholder
-assert_checkbox_count
-assert_checkbox_checked
-assert_checkbox_unchecked
+assert_button_disabled
+assert_button_enabled
 assert_button_has_outline
+assert_cells_cell_text
+assert_cells_row_visible
+assert_checkbox_checked
+assert_checkbox_count
+assert_checkbox_unchecked
+assert_contains
+assert_focused
+assert_focused_input_value
+assert_input_empty
+assert_input_not_typeable
+assert_input_typeable
+assert_input_value
+assert_input_placeholder
+assert_not_contains
+assert_not_focused
+assert_toggle_all_darker
+assert_url
 
 click_button
-click_text
-click_checkbox
 click_button_near_text
+click_checkbox
+click_text
+dblclick_cells_cell
 dblclick_text
-hover_text
 focus_input
-type
+hover_text
 key
-wait
-run
+select_option
+set_focused_input_value
+set_input_value
+set_slider_value
+type
 clear_states
+run
+wait
+```
+
+Action semantics:
+
+```text
+Text actions match visible semantic-tree text after layout, not source text.
+Index-based actions use zero-based indexes unless the upstream expected file describes a human-facing row/cell coordinate.
+assert_url checks RouteStore.current() and, in browser, the visible URL path/hash.
+set_* actions replace the control value and emit the corresponding Boon change event.
+type appends text to the focused input and emits change events deterministically.
+key emits key_down with the current focused input value.
+wait advances virtual time in native verifier and browser verifier; do not depend on wall-clock sleeping.
 ```
 
 For `todo_mvc_physical.expected`, the following must pass:
@@ -1540,6 +2155,24 @@ Expected runner algorithm:
 ---
 
 ## 19. Example implementation order
+
+### Phase 0 — Dependency pins and Boon bridge preflight
+
+Deliver:
+
+```text
+Zig/tool dependency pins recorded
+upstream Boon corpus commit recorded
+boon-zig dependency pinned
+boon-zig exposes BoonRuntimeHost bridge
+Raybox build fails clearly if required bridge API is missing
+```
+
+Acceptance:
+
+```bash
+zig build test
+```
 
 ### Phase 1 — Build + Sokol + Clay shell
 
@@ -1606,8 +2239,10 @@ zig build run-playground
 Deliver:
 
 ```text
-load fonts through sokol_fetch
+embed core fonts with @embedFile
 dynamic glyph atlas
+RGBA8 glyph atlas
+font fallback
 Clay text measurement
 text rendering
 caret
@@ -1629,8 +2264,11 @@ Deliver:
 ```text
 boon-zig dependency wired
 single-file project compile/run
-DocumentSnapshot/SceneSnapshot adapter
+RuntimeOutput document/scene adapter
 diagnostic display
+host persistence callbacks
+host route callbacks
+virtual clock callback
 ```
 
 Acceptance examples:
@@ -1659,6 +2297,8 @@ focus model
 keyboard text editing
 hover
 double-click
+router events
+persistence clear/rerun behavior
 ```
 
 Acceptance examples:
@@ -1684,13 +2324,14 @@ module resolution
 Generated/Assets.bn generation
 data URI support
 minimal SVG support
+BUILD.bn host result/error shapes
 ```
 
 Acceptance:
 
 ```bash
-zig build verify-examples-native --filter todo_mvc_physical --build-only
-zig build verify-examples-web --filter todo_mvc_physical --build-only
+zig build verify-examples-native -Dexample=todo_mvc_physical -Dbuild-only=true
+zig build verify-examples-web -Dexample=todo_mvc_physical -Dbuild-only=true
 ```
 
 ### Phase 8 — Physical renderer projection
@@ -1730,7 +2371,6 @@ select
 slider
 svg
 svg_circle
-router
 timers
 scroll containers
 cells editing behavior
@@ -1752,8 +2392,12 @@ The implementation is complete only when all commands pass:
 ```bash
 zig build test
 zig build verify-corpus
+zig build verify-text-native
+zig build verify-text-web
 zig build verify-examples-native
 zig build verify-examples-web
+zig build verify-examples-native -Dexample=todo_mvc_physical -Dbuild-only=true
+zig build verify-examples-web -Dexample=todo_mvc_physical -Dbuild-only=true
 zig build verify-physical-native
 zig build verify-physical-web
 zig build run-playground
@@ -1763,7 +2407,12 @@ zig build run-playground -Dtarget=wasm32-emscripten
 Required final state:
 
 ```text
-Every upstream playground example is in corpus_manifest.json.
+Every upstream playground registry example is in corpus_manifest.json.
+Every ignored upstream entry has ignored=true and a non-empty reason.
+Verification results are written to zig-out/reports/, not back into corpus_manifest.json.
+Every non-ignored example is DONE in example_status_native.json and example_status_web.json.
+All dependency and corpus pins are recorded.
+boon-zig exposes the required public BoonRuntimeHost bridge.
 Every example compiles through boon-zig.
 Every example renders through Raybox.
 Every example works in a native Sokol window.
@@ -1775,7 +2424,7 @@ todo_mvc_physical runs as an 8-file project.
 todo_mvc_physical BUILD.bn generates assets.
 todo_mvc_physical expected script passes.
 todo_mvc_physical physical visual verifier passes.
-Native and browser screenshots are within tolerance.
+Native and browser screenshots/diffs are written as regression artifacts with tolerance metadata.
 ```
 
 ---
